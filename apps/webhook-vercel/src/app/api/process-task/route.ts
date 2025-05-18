@@ -121,21 +121,52 @@ async function transcribeVideoWithWhisper(videoBlob: Blob, fileName: string = 'v
     // formdata-nodeのFileオブジェクトを作成して渡す
     const whisperFile = new File([videoBuffer], fileName, { type: videoBlob.type });
 
+    console.log(`[Whisper Pre-flight] Preparing to call OpenAI Whisper API.`);
+    console.log(`[Whisper Pre-flight] File details - Name: ${fileName}, Size: ${videoBuffer.length} bytes, Type: ${videoBlob.type}`);
+    console.log(`[Whisper Pre-flight] OpenAI Model: whisper-1`);
+
     const transcription = await openai.audio.transcriptions.create({
         model: 'whisper-1',
         file: whisperFile, // Fileオブジェクトを渡す
     });
     
-    console.log('Whisper API transcription successful.');
+    console.log(`[Whisper Success] Whisper API transcription successful for ${fileName}.`);
+    console.log(`[Whisper Success] Transcription text length: ${transcription.text.length}`);
+    // console.log('[Whisper Success] Full response object:', JSON.stringify(transcription, null, 2)); // 詳細すぎる場合はコメントアウト
+
     return transcription.text;
   } catch (error: unknown) {
-    console.error('Error during Whisper API transcription:', (error instanceof Error) ? error.message : String(error));
+    console.error(`[Whisper Error] Error during Whisper API transcription for ${fileName}.`);
+    console.error('[Whisper Error] Raw error object:', error);
+
     if (error instanceof OpenAI.APIError) {
-      console.error('Whisper API Error Response:', error.status, error.error);
-    } else if (error instanceof Error && error.cause) {
-      console.error('Whisper API Error Cause:', error.cause);
+      console.error('[Whisper Error] OpenAI APIError Details:');
+      console.error(`  Status: ${error.status}`);
+      console.error(`  Code: ${error.code}`);
+      console.error(`  Param: ${error.param}`);
+      console.error(`  Type: ${error.type}`);
+      console.error(`  Message: ${error.message}`);
+      if (error.headers) {
+        console.error(`  Headers: ${JSON.stringify(error.headers, null, 2)}`);
+      }
+      if (error.error) {
+          console.error(`  Error object from API: ${JSON.stringify(error.error, null, 2)}`);
+      }
+    } else if (error instanceof Error) {
+        console.error('[Whisper Error] Standard Error Details:');
+        console.error(`  Name: ${error.name}`);
+        console.error(`  Message: ${error.message}`);
+        if (error.stack) {
+            console.error(`  Stack: ${error.stack}`);
+        }
+        if (error.cause) {
+             console.error('  Cause:', error.cause);
+        }
+    } else {
+        console.error('[Whisper Error] Unknown error type during Whisper API transcription.');
     }
-    throw new Error(`Whisper API request failed: ${(error instanceof Error) ? error.message : String(error)}`);
+    // 元のエラーを再スローするか、新しいエラーをスローするかは既存の設計に合わせる
+    throw new Error(`Whisper API request failed for ${fileName}: ${(error instanceof Error) ? error.message : String(error)}`);
   }
 }
 
