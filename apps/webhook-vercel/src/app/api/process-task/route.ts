@@ -421,7 +421,7 @@ export async function POST(request: NextRequest) {
     const clientName = taskData.client_name as string | null | undefined;
     // original_file_name はDBから取得したものを優先、なければstoragePathから
     const fileNameForWhisper = taskData.original_file_name || originalFileNameForNotification || 'audio.mp4';
-    mimeTypeForWhisper = taskData.mimetype || 'application/octet-stream'; // DBにmimetypeがなければデフォルト
+    const mimeTypeForWhisper: string = taskData.mimetype || 'application/octet-stream'; // DBにmimetypeがなければデフォルト。型をstringに明示
 
     await updateTaskInSupabase(currentTaskId, 'processing_in_vercel');
 
