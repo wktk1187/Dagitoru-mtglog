@@ -40,24 +40,16 @@ serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
   let supabase: SupabaseClient | null = null;
-  let record: { id: string; storage_path: string } | null = null;
+  let taskId: string | null = null; 
 
   try {
-    const payload = await req.json();
-    if (payload.type === "INSERT" && payload.table === "transcription_tasks" && payload.record) {
-      record = payload.record;
-    } else {
-      console.error("Invalid payload structure:", payload);
-      throw new Error("Invalid payload structure");
+    const { taskId: receivedTaskId, storagePath } = await req.json();
+    
+    if (!receivedTaskId || !storagePath) {
+      console.error("taskId or storagePath missing in payload:", { receivedTaskId, storagePath });
+      throw new Error("taskId or storagePath missing in payload");
     }
-
-    if (!record || !record.id || !record.storage_path) {
-      console.error("Record ID or storage_path missing:", record);
-      throw new Error("Record ID or storage_path missing in payload");
-    }
-
-    const taskId = record.id;
-    const storagePath = record.storage_path;
+    taskId = receivedTaskId; 
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? getEnvVar("MY_APP_SUPABASE_URL");
     const serviceRoleKey = getEnvVar("MY_APP_SUPABASE_SERVICE_ROLE_KEY");
@@ -80,14 +72,14 @@ serve(async (req: Request) => {
       const errorBody = await webhookResponse.text();
       console.error(`Vercel webhook failed for task ${taskId}: ${webhookResponse.status}`, errorBody);
       if (supabase) {
-        await updateTaskStatus(supabase, taskId, "webhook_failed", `Vercel webhook error: ${webhookResponse.status} - ${errorBody}`);
+        await updateTaskStatus(supabase, taskId!, "webhook_failed", `Vercel webhook error: ${webhookResponse.status} - ${errorBody}`);
       }
       throw new Error(`Vercel webhook notification failed: ${webhookResponse.status}`);
     }
 
     console.log(`Vercel webhook notified successfully for task ${taskId}. Response: ${await webhookResponse.text()}`);
     if (supabase) {
-      await updateTaskStatus(supabase, taskId, "webhook_sent");
+      await updateTaskStatus(supabase, taskId!, "webhook_sent");
     }
 
     return new Response(JSON.stringify({ message: "Webhook notification sent to Vercel." }), {
@@ -98,8 +90,8 @@ serve(async (req: Request) => {
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Error in process-video-task (notification function):", msg);
-    if (record && record.id && supabase) {
-      await updateTaskStatus(supabase, record.id, "function_error", msg);
+    if (taskId && supabase) { 
+      await updateTaskStatus(supabase, taskId, "function_error", msg);
     }
     return new Response(JSON.stringify({ error: `Failed to notify Vercel: ${msg}` }), {
       headers: { ...cors, "Content-Type": "application/json" },
