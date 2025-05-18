@@ -15,7 +15,8 @@ let supabaseAdmin: SupabaseClient;
 if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
   supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 } else {
-  console.error('Supabase environment variables are not fully set for /api/slack/events');
+  // 起動時のエラーとして記録し、リクエスト処理時には supabaseAdmin の存在をチェックする
+  console.error('Supabase environment variables are not fully set for /api/slack/events at startup.');
 }
 
 async function verifySlackRequest(request: NextRequest) {
@@ -90,12 +91,12 @@ export async function POST(request: NextRequest) {
     headers: request.headers,
     body: Buffer.from(rawBody),
     method: request.method,
-    // @ts-ignore // Node.js stream types might not align perfectly with NextRequest internal types
+    // @ts-ignore
     duplex: 'half' 
   });
 
   if (!await verifySlackRequest(reqForVerify)) {
-    console.warn('Slack request verification failed.');
+    console.warn(`[${new Date().toISOString()}] Slack request verification failed.`);
     return NextResponse.json({ error: 'Request verification failed' }, { status: 403 });
   }
 
@@ -103,21 +104,26 @@ export async function POST(request: NextRequest) {
 
   // URL検証チャレンジへの応答
   if (data.type === 'url_verification') {
-    console.log('Responding to Slack URL verification challenge');
+    console.log(`[${new Date().toISOString()}] Responding to Slack URL verification challenge`);
     return NextResponse.json({ challenge: data.challenge });
   }
 
   // file_sharedイベントの処理
   if (data.event && data.event.type === 'file_shared') {
     const fileId = data.event.file_id;
-    const eventChannelId = data.event.channel_id;
-    console.log(`Received file_shared event for file_id: ${fileId} in channel: ${eventChannelId}`);
+    const eventChannelId = data.event.channel_id; // 後で通知などに使える可能性
+    console.log(`[${new Date().toISOString()}] Received file_shared event for file_id: ${fileId} in channel: ${eventChannelId}`);
 
     try {
-      // Slack Web APIクライアントを初期化
+      // Supabaseクライアントが初期化されているか確認
+      if (!supabaseAdmin) {
+        console.error(`[${new Date().toISOString()}] Supabase client is not initialized. Cannot process event.`);
+        return NextResponse.json({ error: 'Server configuration error: Supabase client not available.' }, { status: 500 });
+      }
+
       const slackToken = process.env.SLACK_BOT_TOKEN;
       if (!slackToken) {
-        console.error("SLACK_BOT_TOKEN is not set.");
+        console.error(`[${new Date().toISOString()}] SLACK_BOT_TOKEN is not set.`);
         return NextResponse.json(
           { error: "Slack Bot Token not configured" },
           { status: 500 }
@@ -125,137 +131,75 @@ export async function POST(request: NextRequest) {
       }
       const slackClient = new WebClient(slackToken);
 
-      // files.info APIを呼び出してファイル詳細情報を取得
+      console.log(`[${new Date().toISOString()}] Calling files.info for fileId: ${fileId}`);
       const fileInfoResponse = await slackClient.files.info({ file: fileId });
 
       if (!fileInfoResponse.ok || !fileInfoResponse.file) {
-        console.error("Failed to retrieve file info from Slack API:", fileInfoResponse.error);
+        console.error(`[${new Date().toISOString()}] Failed to retrieve file info from Slack API for fileId ${fileId}:`, fileInfoResponse.error);
         return NextResponse.json(
-          { error: "Failed to retrieve file info" },
+          { error: "Failed to retrieve file info from Slack" },
           { status: 500 }
         );
       }
 
-      const fileData = fileInfoResponse.file; // 完全なファイルオブジェクト
-      console.log("Successfully retrieved file info:", JSON.stringify(fileData, null, 2));
+      const fileData = fileInfoResponse.file;
+      console.log(`[${new Date().toISOString()}] Successfully retrieved file info for ${fileId}:`, fileData.name);
 
-      if (!fileData.url_private_download) { // ダウンロードURLをチェック
-        console.error('url_private_download not found in file info.', fileData);
-        return NextResponse.json({ error: 'File download URL not found' }, { status: 400 });
+      if (!fileData.url_private_download) {
+        console.error(`[${new Date().toISOString()}] url_private_download not found in file info for ${fileId}.`, fileData);
+        return NextResponse.json({ error: 'File download URL not found in Slack file info' }, { status: 400 });
       }
       
-      // Slackメッセージテキストの取得 (initial_comment が fileData に含まれることを期待)
       const messageText = fileData.initial_comment && fileData.initial_comment.comment
         ? fileData.initial_comment.comment
-        : ""; // コメントがない場合は空文字
+        : "";
 
       const parsedMessage = parseSlackMessageText(messageText);
+      const taskId = uuidv4();
 
-      const downloadUrl = fileData.url_private_download;
-      const originalFileName = fileData.name || 'unknown_file';
-      const fileType = fileData.mimetype || 'application/octet-stream';
-      // 拡張子は fileData.filetype から取得し、なければMIMEタイプから推測するかデフォルト値を設定
-      // 一般的な動画・音声形式を考慮
-      let fileExtension = fileData.filetype || 'dat';
-      if (fileType.startsWith('video/')) {
-        fileExtension = fileType.split('/')[1];
-      } else if (fileType.startsWith('audio/')) {
-        fileExtension = fileType.split('/')[1] === 'mpeg' ? 'mp3' : fileType.split('/')[1];
-      }
-      if (fileExtension === 'quicktime') fileExtension = 'mov';
+      console.log(`[${new Date().toISOString()}] Attempting to insert task ${taskId} into DB with status 'upload_pending'.`);
 
-      const taskId = uuidv4(); // タスクIDを先に生成
-      const storagePath = `uploads/${taskId}.${fileExtension}`; // storagePath に taskId を含める
-
-      console.log(`[${new Date().toISOString()}] Attempting to download from: ${downloadUrl}`);
-      console.log(`[${new Date().toISOString()}] File info: name=${originalFileName}, type=${fileType}, ext=${fileExtension}, storagePath=${storagePath}`);
-      console.log(`[${new Date().toISOString()}] Parsed text: Meeting Date: ${parsedMessage.meetingDate}, Consultant: ${parsedMessage.consultantName}, Client: ${parsedMessage.clientName}`);
-
-      if (!SLACK_BOT_TOKEN) {
-        console.error(`[${new Date().toISOString()}] SLACK_BOT_TOKEN is not set.`);
-        return NextResponse.json({ error: 'SLACK_BOT_TOKEN is not configured on the server.' }, { status: 500 });
-      }
-      if (!supabaseAdmin) {
-        console.error(`[${new Date().toISOString()}] Supabase client is not initialized.`);
-        return NextResponse.json({ error: 'Supabase client is not initialized on the server.' }, { status: 500 });
-      }
-
-      console.log(`[${new Date().toISOString()}] Starting file download from Slack...`);
-      const response = await fetch(downloadUrl, {
-        headers: {
-          'Authorization': `Bearer ${SLACK_BOT_TOKEN}`,
-        },
-      });
-      console.log(`[${new Date().toISOString()}] File download from Slack finished. Status: ${response.status}`);
-
-      if (!response.ok || !response.body) {
-        console.error(`[${new Date().toISOString()}] Failed to download file from Slack: ${response.status} ${response.statusText}`);
-        const errorBody = await response.text();
-        console.error(`[${new Date().toISOString()}] Slack download error body:`, errorBody);
-        return NextResponse.json({ error: 'Failed to download file from Slack' }, { status: response.status });
-      }
-
-      console.log(`[${new Date().toISOString()}] Starting response.arrayBuffer()...`);
-      const fileBuffer = await response.arrayBuffer();
-      console.log(`[${new Date().toISOString()}] File downloaded successfully. Size: ${fileBuffer.byteLength} bytes. Uploading to Supabase...`);
-
-      // Supabase Storageへアップロード (videos バケットを想定)
-      console.log(`[${new Date().toISOString()}] Starting Supabase Storage upload...`);
-      const { data: uploadResult, error: uploadError } = await supabaseAdmin.storage
-        .from('videos') // バケット名を 'videos' に指定
-        .upload(storagePath, fileBuffer, {
-          contentType: fileType,
-          upsert: false, // 同名ファイルが存在する場合はエラー (taskIdベースなので基本重複しないはず)
-        });
-      
-      if (uploadError) {
-        console.error(`[${new Date().toISOString()}] Failed to upload to Supabase Storage:`, uploadError);
-        return NextResponse.json({ error: `Failed to upload to Supabase Storage: ${uploadError.message}` }, { status: 500 });
-      }
-      console.log(`[${new Date().toISOString()}] File uploaded to Supabase Storage:`, uploadResult);
-
-      // transcription_tasks テーブルへ挿入
-      console.log(`[${new Date().toISOString()}] Starting DB task insertion...`);
       const taskToInsert = {
         id: taskId,
-        storage_path: storagePath, // storagePathは バケット名を含まないパス
-        original_file_name: originalFileName,
-        status: 'pending', // 初期ステータス
-        meeting_date: parsedMessage.meetingDate, // parseDateToISO済みの形式
+        original_file_name: fileData.name || 'unknown_file',
+        slack_file_id: fileId,
+        slack_download_url: fileData.url_private_download, // Supabase Functionが使用
+        mimetype: fileData.mimetype || 'application/octet-stream',
+        filetype: fileData.filetype || 'dat', // Supabase Function側でより詳細な拡張子決定も可能
+        status: 'upload_pending', // Supabase Functionによるアップロード待ち
+        meeting_date: parsedMessage.meetingDate,
         consultant_name: parsedMessage.consultantName,
         client_name: parsedMessage.clientName,
-        // created_at, updated_at はDBのデフォルトまたはトリガーで設定される想定
+        // created_at, updated_at はDBのデフォルトまたはトリガーで設定
+        // storage_path は Supabase Function が設定
       };
 
-      const { data: dbTask, error: dbError } = await supabaseAdmin
+      const { data: dbResult, error: dbError } = await supabaseAdmin
         .from('transcription_tasks')
         .insert([taskToInsert])
-        .select() // 挿入したデータを返すようにselect()を追加
-        .single(); // 1行だけ挿入するのでsingle()
+        .select()
+        .single();
 
       if (dbError) {
-        console.error(`[${new Date().toISOString()}] Failed to insert transcription task to DB:`, dbError);
-        // ここでアップロードしたファイルを削除する処理も検討できる
-        return NextResponse.json({ message: "File uploaded but task creation failed.", error: dbError.message }, { status: 500 });
+        console.error(`[${new Date().toISOString()}] Failed to insert task ${taskId} to DB:`, dbError);
+        return NextResponse.json({ message: "Failed to create transcription task.", error: dbError.message }, { status: 500 });
       }
-      console.log(`[${new Date().toISOString()}] Transcription task inserted to DB:`, dbTask);
+      
+      console.log(`[${new Date().toISOString()}] Task ${taskId} inserted to DB successfully with status 'upload_pending'. DB Result:`, dbResult);
 
-      console.log(`[${new Date().toISOString()}] Successfully processed file_shared event for taskId: ${taskId}`);
       return NextResponse.json({
-        message: 'File processed and task created successfully.',
+        message: 'Request received. File upload will be processed asynchronously.',
         taskId: taskId,
-        storagePath: storagePath,
-        dbTask: dbTask
-      }, { status: 200 });
+      }, { status: 202 }); // 202 Accepted: リクエストは受理されたが処理は完了していない
 
-    } catch (error: any) { // errorをany型としてキャッチ
-      console.error(`[${new Date().toISOString()}] Error processing file_shared event in catch block:`, error);
-      // errorがErrorインスタンスか確認してメッセージを取得
+    } catch (error: any) {
+      const taskIdForErrorLog = "unknown_task_id_at_catch"; // taskIdが取れない場合もあるため
+      console.error(`[${new Date().toISOString()}] Error processing file_shared event for ${taskIdForErrorLog}:`, error);
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return NextResponse.json({ error: 'Internal server error', details: errorMessage }, { status: 500 });
+      return NextResponse.json({ error: 'Internal server error during event processing', details: errorMessage }, { status: 500 });
     }
   }
 
-  console.log(`[${new Date().toISOString()}] Received Slack event, but not a file_shared or url_verification event`, data.event ? data.event.type : "No event type or unknown structure");
-  return NextResponse.json({ message: 'Event received but not processed' });
+  console.log(`[${new Date().toISOString()}] Received Slack event, but not a file_shared or url_verification event. Type:`, data.event ? data.event.type : "No event type");
+  return NextResponse.json({ message: 'Event received but not processed by this handler' });
 } 
