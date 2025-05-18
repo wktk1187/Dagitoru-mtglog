@@ -113,16 +113,23 @@ async function downloadVideoFromStorage(filePathOnBucket: string): Promise<Blob>
 }
 
 async function transcribeVideoWithWhisper(videoBlob: Blob, fileName: string = 'video.mp4'): Promise<string> {
-  console.log(`Transcribing video: ${fileName} (type: ${videoBlob.type}) using Whisper API...`);
+  console.log(`[Whisper Start] Called transcribeVideoWithWhisper for ${fileName}, Blob type: ${videoBlob.type}, Blob size: ${videoBlob.size}`);
   try {
+    console.log(`[Whisper Detail] Attempting to get arrayBuffer from videoBlob for ${fileName}`);
     const arrayBuffer = await videoBlob.arrayBuffer();
+    console.log(`[Whisper Detail] Successfully got arrayBuffer for ${fileName}, length: ${arrayBuffer.byteLength}`);
+    
+    console.log(`[Whisper Detail] Attempting to create Buffer from arrayBuffer for ${fileName}`);
     const videoBuffer = Buffer.from(arrayBuffer);
+    console.log(`[Whisper Detail] Successfully created Buffer for ${fileName}, length: ${videoBuffer.length}`);
 
     // formdata-nodeのFileオブジェクトを作成して渡す
+    console.log(`[Whisper Detail] Attempting to create File object using formdata-node for ${fileName}`);
     const whisperFile = new File([videoBuffer], fileName, { type: videoBlob.type });
+    console.log(`[Whisper Detail] Successfully created File object for ${fileName}, type: ${whisperFile.type}, size: ${whisperFile.size}`);
 
     console.log(`[Whisper Pre-flight] Preparing to call OpenAI Whisper API.`);
-    console.log(`[Whisper Pre-flight] File details - Name: ${fileName}, Size: ${videoBuffer.length} bytes, Type: ${videoBlob.type}`);
+    console.log(`[Whisper Pre-flight] File details - Name: ${fileName}, Size: ${videoBuffer.length} bytes, Type: ${videoBlob.type}`); // この行はwhisperFile.sizeでも良いかも
     console.log(`[Whisper Pre-flight] OpenAI Model: whisper-1`);
 
     const transcription = await openai.audio.transcriptions.create({
