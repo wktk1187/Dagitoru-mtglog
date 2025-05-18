@@ -87,27 +87,28 @@ function parseDateToISO(dateString: string | null | undefined): string | undefin
 }
 
 // ヘルパー関数
-async function downloadVideoFromStorage(storagePath: string): Promise<Blob> {
-  console.log(`Downloading video from Supabase Storage: ${storagePath}`);
-  const [bucketName, ...filePathParts] = storagePath.split('/');
-  const filePath = filePathParts.join('/');
+async function downloadVideoFromStorage(filePathOnBucket: string): Promise<Blob> {
+  const bucketName = 'videos'; // バケット名を固定
+  console.log(`Downloading video from Supabase Storage: bucket '${bucketName}', path '${filePathOnBucket}'`);
 
-  if (!bucketName || !filePath) {
-    throw new Error(`Invalid storagePath format: ${storagePath}. Expected format: bucket/path/to/file.mp4`);
+  if (!filePathOnBucket) { // ファイルパスが空でないかチェック
+    throw new Error(`Invalid filePathOnBucket: ${filePathOnBucket}. Expected format: path/to/file.mp4`);
   }
 
   const { data, error } = await supabase.storage
-    .from(bucketName)
-    .download(filePath);
+    .from(bucketName) // 固定のバケット名を使用
+    .download(filePathOnBucket); // filePathOnBucket をそのまま使用
 
   if (error) {
     console.error('Error downloading video from Supabase:', error);
-    throw new Error(`Failed to download video (${storagePath}): ${error.message}`);
+    // エラーオブジェクトに詳細が含まれている場合があるので、それをログに出力
+    if (error.cause) console.error('Error cause:', error.cause);
+    throw new Error(`Failed to download video (bucket: ${bucketName}, path: ${filePathOnBucket}): ${error.message}`);
   }
   if (!data) {
-    throw new Error(`No data returned when downloading video (${storagePath})`);
+    throw new Error(`No data returned when downloading video (bucket: ${bucketName}, path: ${filePathOnBucket})`);
   }
-  console.log(`Video ${storagePath} downloaded successfully.`);
+  console.log(`Video ${filePathOnBucket} from bucket ${bucketName} downloaded successfully.`);
   return data;
 }
 
