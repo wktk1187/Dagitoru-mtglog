@@ -51,8 +51,8 @@ serve(async (req: Request) => {
     }
     taskId = receivedTaskId; 
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? getEnvVar("MY_APP_SUPABASE_URL");
-    const serviceRoleKey = getEnvVar("MY_APP_SUPABASE_SERVICE_ROLE_KEY");
+    const supabaseUrl = getEnvVar("SUPABASE_URL");
+    const serviceRoleKey = getEnvVar("SUPABASE_SERVICE_ROLE_KEY");
     supabase = createClient(supabaseUrl, serviceRoleKey);
 
     const vercelWebhookUrl = getEnvVar("VERCEL_WEBHOOK_URL");
