@@ -1,0 +1,6 @@
+supabase/.temp/
+supabase/.branches/
+supabase/functions/**/node_modules/
+supabase/.env.local 
+node_modules
+apps/webhook-vercel/.env.local
