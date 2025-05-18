@@ -10,7 +10,7 @@ import process from "node:process"; // Deno lint: no-process-global の対応
 
 // 環境変数のチェックとSupabaseクライアントの初期化
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY; // SERVICE_ROLE_KEY から ANON_KEY に変更
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const geminiApiKey = process.env.GEMINI_API_KEY; // Gemini APIキー
 const notionApiKey = process.env.NOTION_API_KEY; // Notion APIキー
@@ -20,14 +20,14 @@ const NOTION_DB_ID_1 = process.env.NOTION_DB_ID_1;
 const NOTION_DB_ID_2 = process.env.NOTION_DB_ID_2;
 const NOTION_DB_ID_3 = process.env.NOTION_DB_ID_3;
 
-if (!supabaseUrl || !supabaseServiceRoleKey || !openaiApiKey || !geminiApiKey || !notionApiKey ||
+if (!supabaseUrl || !supabaseAnonKey || !openaiApiKey || !geminiApiKey || !notionApiKey ||
     !NOTION_DB_ID_1 || !NOTION_DB_ID_2 || !NOTION_DB_ID_3
    ) {
   console.error(
     'Missing environment variables:',
     {
       supabaseUrl: !!supabaseUrl,
-      supabaseServiceRoleKey: !!supabaseServiceRoleKey,
+      supabaseAnonKey: !!supabaseAnonKey, // supabaseServiceRoleKey から変更
       openaiApiKey: !!openaiApiKey,
       geminiApiKey: !!geminiApiKey,
       notionApiKey: !!notionApiKey,
@@ -40,7 +40,7 @@ if (!supabaseUrl || !supabaseServiceRoleKey || !openaiApiKey || !geminiApiKey ||
   // アプリケーション起動時にログで確認できることが重要です。
 }
 
-const supabaseAdmin: SupabaseClient = createClient(supabaseUrl!, supabaseServiceRoleKey!);
+const supabase: SupabaseClient = createClient(supabaseUrl!, supabaseAnonKey!); // supabaseAdmin から supabase に変更し、AnonKey を使用
 const openai: OpenAI = new OpenAI({ apiKey: openaiApiKey });
 const genAI = new GoogleGenerativeAI(geminiApiKey!); // Geminiクライアント初期化
 const notion = new NotionClient({ auth: notionApiKey }); // Notionクライアント初期化
@@ -96,7 +96,7 @@ async function downloadVideoFromStorage(storagePath: string): Promise<Blob> {
     throw new Error(`Invalid storagePath format: ${storagePath}. Expected format: bucket/path/to/file.mp4`);
   }
 
-  const { data, error } = await supabaseAdmin.storage
+  const { data, error } = await supabase.storage
     .from(bucketName)
     .download(filePath);
 
@@ -231,7 +231,7 @@ async function updateTaskInSupabase(taskId: string, status: string, data?: Parti
         updates.processed_at = new Date().toISOString(); 
     }
 
-    const { error } = await supabaseAdmin
+    const { error } = await supabase
         .from('transcription_tasks')
         .update(updates)
         .eq('id', taskId);
@@ -338,7 +338,7 @@ async function notifySlack(payload: object) {
 
 export async function POST(request: NextRequest) {
   console.log('Received request in /api/process-task');
-  if (!supabaseUrl || !supabaseServiceRoleKey || !openaiApiKey || !geminiApiKey || !notionApiKey ||
+  if (!supabaseUrl || !supabaseAnonKey || !openaiApiKey || !geminiApiKey || !notionApiKey ||
       !NOTION_DB_ID_1 || !NOTION_DB_ID_2 || !NOTION_DB_ID_3
   ) {
     return NextResponse.json({ error: 'Server configuration error: Missing API keys or DB IDs.' }, { status: 500 });
@@ -362,7 +362,7 @@ export async function POST(request: NextRequest) {
     const currentTaskId = taskIdFromRequest; 
     originalFileNameForNotification = storagePathFromRequest.split('/').pop();
 
-    const { data: taskData, error: taskError } = await supabaseAdmin
+    const { data: taskData, error: taskError } = await supabase
       .from('transcription_tasks')
       .select('meeting_date, consultant_name, client_name, original_file_name')
       .eq('id', currentTaskId)
