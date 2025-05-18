@@ -7,6 +7,8 @@ import { File } from 'formdata-node'; // Whisper APIへのファイル渡しの�
 import { Client as NotionClient, APIErrorCode, isNotionClientError } from '@notionhq/client'; // Notion, APIErrorCode, isNotionClientError を追加
 import type { CreatePageParameters } from '@notionhq/client/build/src/api-endpoints'; // Notionページプロパティ型
 import process from "node:process"; // Deno lint: no-process-global の対応
+import { Readable } from 'node:stream'; // Node.js Readable ストリーム
+import { toFile } from 'openai/uploads'; // OpenAI SDKのtoFileユーティリティ
 
 // 環境変数のチェックとSupabaseクライアントの初期化
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -87,67 +89,63 @@ function parseDateToISO(dateString: string | null | undefined): string | undefin
 }
 
 // ヘルパー関数
-async function downloadVideoFromStorage(filePathOnBucket: string): Promise<Blob> {
+async function downloadVideoFromStorage(filePathOnBucket: string): Promise<Readable> {
   const bucketName = 'videos'; // バケット名を固定
-  console.log(`Downloading video from Supabase Storage: bucket '${bucketName}', path '${filePathOnBucket}'`);
+  console.log(`[Stream Download] Downloading video from Supabase Storage: bucket '${bucketName}', path '${filePathOnBucket}'`);
 
   if (!filePathOnBucket) { // ファイルパスが空でないかチェック
     throw new Error(`Invalid filePathOnBucket: ${filePathOnBucket}. Expected format: path/to/file.mp4`);
   }
 
-  const { data, error } = await supabase.storage
+  const { data: blobData, error } = await supabase.storage
     .from(bucketName) // 固定のバケット名を使用
     .download(filePathOnBucket); // filePathOnBucket をそのまま使用
 
   if (error) {
-    console.error('Error downloading video from Supabase:', error);
-    // エラーオブジェクトに詳細が含まれている場合があるので、それをログに出力
-    if (error.cause) console.error('Error cause:', error.cause);
-    throw new Error(`Failed to download video (bucket: ${bucketName}, path: ${filePathOnBucket}): ${error.message}`);
+    console.error('[Stream Download] Error downloading video from Supabase:', error);
+    if (error.cause) console.error('[Stream Download] Error cause:', error.cause);
+    throw new Error(`[Stream Download] Failed to download video (bucket: ${bucketName}, path: ${filePathOnBucket}): ${error.message}`);
   }
-  if (!data) {
-    throw new Error(`No data returned when downloading video (bucket: ${bucketName}, path: ${filePathOnBucket})`);
+  if (!blobData) {
+    throw new Error(`[Stream Download] No data returned when downloading video (bucket: ${bucketName}, path: ${filePathOnBucket})`);
   }
-  console.log(`Video ${filePathOnBucket} from bucket ${bucketName} downloaded successfully.`);
-  return data;
+  console.log(`[Stream Download] Video blob for ${filePathOnBucket} from bucket ${bucketName} obtained. Size: ${blobData.size}`);
+
+  // BlobからReadableStream (Web Stream) を取得し、Node.jsのReadableストリームに変換
+  // VercelのNode.js環境 (Node 18+) では Readable.fromWeb が利用可能
+  const webStream = blobData.stream();
+  const nodeStream = Readable.fromWeb(webStream as any); // as anyで型互換性の問題を一旦回避（要確認）
+  
+  console.log(`[Stream Download] Converted Blob to Node.js Readable stream for ${filePathOnBucket}`);
+  return nodeStream;
 }
 
-async function transcribeVideoWithWhisper(videoBlob: Blob, fileName: string = 'video.mp4'): Promise<string> {
-  console.log(`[Whisper Start] Called transcribeVideoWithWhisper for ${fileName}, Blob type: ${videoBlob.type}, Blob size: ${videoBlob.size}`);
+async function transcribeVideoWithWhisper(videoStream: Readable, fileName: string, mimeType: string): Promise<string> {
+  console.log(`[Whisper Stream Start] Called transcribeVideoWithWhisper for ${fileName}, MimeType: ${mimeType}`);
   try {
-    console.log(`[Whisper Detail] Attempting to get arrayBuffer from videoBlob for ${fileName}`);
-    const arrayBuffer = await videoBlob.arrayBuffer();
-    console.log(`[Whisper Detail] Successfully got arrayBuffer for ${fileName}, length: ${arrayBuffer.byteLength}`);
-    
-    console.log(`[Whisper Detail] Attempting to create Buffer from arrayBuffer for ${fileName}`);
-    const videoBuffer = Buffer.from(arrayBuffer);
-    console.log(`[Whisper Detail] Successfully created Buffer for ${fileName}, length: ${videoBuffer.length}`);
+    // OpenAI SDKのtoFileユーティリティを使用してストリームからファイルオブジェクトを作成
+    // toFileは内部でストリームを処理することを期待
+    console.log(`[Whisper Stream Detail] Attempting to use toFile for ${fileName}`);
+    const fileForApi = await toFile(videoStream, fileName, { type: mimeType });
+    console.log(`[Whisper Stream Detail] Successfully created file object using toFile for ${fileName}, Name: ${fileForApi.name}, Size: ${fileForApi.size}, Type: ${fileForApi.type}`);
 
-    // formdata-nodeのFileオブジェクトを作成して渡す
-    console.log(`[Whisper Detail] Attempting to create File object using formdata-node for ${fileName}`);
-    const whisperFile = new File([videoBuffer], fileName, { type: videoBlob.type });
-    console.log(`[Whisper Detail] Successfully created File object for ${fileName}, type: ${whisperFile.type}, size: ${whisperFile.size}`);
-
-    console.log(`[Whisper Pre-flight] Preparing to call OpenAI Whisper API.`);
-    console.log(`[Whisper Pre-flight] File details - Name: ${fileName}, Size: ${videoBuffer.length} bytes, Type: ${videoBlob.type}`); // この行はwhisperFile.sizeでも良いかも
-    console.log(`[Whisper Pre-flight] OpenAI Model: whisper-1`);
+    console.log(`[Whisper Stream Pre-flight] Preparing to call OpenAI Whisper API with streamed file.`);
+    console.log(`[Whisper Stream Pre-flight] OpenAI Model: whisper-1`);
 
     const transcription = await openai.audio.transcriptions.create({
         model: 'whisper-1',
-        file: whisperFile, // Fileオブジェクトを渡す
+        file: fileForApi, 
     });
     
-    console.log(`[Whisper Success] Whisper API transcription successful for ${fileName}.`);
-    console.log(`[Whisper Success] Transcription text length: ${transcription.text.length}`);
-    // console.log('[Whisper Success] Full response object:', JSON.stringify(transcription, null, 2)); // 詳細すぎる場合はコメントアウト
-
+    console.log(`[Whisper Stream Success] Whisper API transcription successful for ${fileName}.`);
+    console.log(`[Whisper Stream Success] Transcription text length: ${transcription.text.length}`);
     return transcription.text;
   } catch (error: unknown) {
-    console.error(`[Whisper Error] Error during Whisper API transcription for ${fileName}.`);
-    console.error('[Whisper Error] Raw error object:', error);
+    console.error(`[Whisper Stream Error] Error during Whisper API transcription for ${fileName}.`);
+    console.error('[Whisper Stream Error] Raw error object:', error);
 
     if (error instanceof OpenAI.APIError) {
-      console.error('[Whisper Error] OpenAI APIError Details:');
+      console.error('[Whisper Stream Error] OpenAI APIError Details:');
       console.error(`  Status: ${error.status}`);
       console.error(`  Code: ${error.code}`);
       console.error(`  Param: ${error.param}`);
@@ -160,7 +158,7 @@ async function transcribeVideoWithWhisper(videoBlob: Blob, fileName: string = 'v
           console.error(`  Error object from API: ${JSON.stringify(error.error, null, 2)}`);
       }
     } else if (error instanceof Error) {
-        console.error('[Whisper Error] Standard Error Details:');
+        console.error('[Whisper Stream Error] Standard Error Details:');
         console.error(`  Name: ${error.name}`);
         console.error(`  Message: ${error.message}`);
         if (error.stack) {
@@ -170,10 +168,9 @@ async function transcribeVideoWithWhisper(videoBlob: Blob, fileName: string = 'v
              console.error('  Cause:', error.cause);
         }
     } else {
-        console.error('[Whisper Error] Unknown error type during Whisper API transcription.');
+        console.error('[Whisper Stream Error] Unknown error type during Whisper API transcription.');
     }
-    // 元のエラーを再スローするか、新しいエラーをスローするかは既存の設計に合わせる
-    throw new Error(`Whisper API request failed for ${fileName}: ${(error instanceof Error) ? error.message : String(error)}`);
+    throw new Error(`Whisper API stream request failed for ${fileName}: ${(error instanceof Error) ? error.message : String(error)}`);
   }
 }
 
@@ -384,26 +381,26 @@ export async function POST(request: NextRequest) {
   }
 
   let taskIdFromRequest: string | undefined;
-  let storagePathFromRequest: string | undefined;
+  let storagePathFromRequest: string | undefined; // これは "uploads/filename.ext" の形式
   let originalFileNameForNotification: string | undefined;
+  let mimeTypeForWhisper: string | undefined;
 
   try {
     const body = await request.json();
     console.log('Request body:', body);
     taskIdFromRequest = body.taskId;
-    storagePathFromRequest = body.storagePath;
-
+    storagePathFromRequest = body.storagePath; // "uploads/file.mp4" 形式
+    
     if (!taskIdFromRequest || !storagePathFromRequest) {
       return NextResponse.json({ error: 'Missing taskId or storagePath in request body' }, { status: 400 });
     }
     
-    // Use a new block-scoped taskId for this operation to avoid confusion
     const currentTaskId = taskIdFromRequest; 
-    originalFileNameForNotification = storagePathFromRequest.split('/').pop();
+    originalFileNameForNotification = storagePathFromRequest.split('/').pop(); // "file.mp4"
 
     const { data: taskData, error: taskError } = await supabase
       .from('transcription_tasks')
-      .select('meeting_date, consultant_name, client_name, original_file_name')
+      .select('meeting_date, consultant_name, client_name, original_file_name, mimetype') // mimetype を追加
       .eq('id', currentTaskId)
       .single();
 
@@ -422,13 +419,16 @@ export async function POST(request: NextRequest) {
     const meetingDate = parseDateToISO(taskData.meeting_date as string | null | undefined);
     const consultantName = taskData.consultant_name as string | null | undefined;
     const clientName = taskData.client_name as string | null | undefined;
+    // original_file_name はDBから取得したものを優先、なければstoragePathから
+    const fileNameForWhisper = taskData.original_file_name || originalFileNameForNotification || 'audio.mp4';
+    mimeTypeForWhisper = taskData.mimetype || 'application/octet-stream'; // DBにmimetypeがなければデフォルト
 
     await updateTaskInSupabase(currentTaskId, 'processing_in_vercel');
 
-    const originalFileName = storagePathFromRequest.split('/').pop() || 'video_from_storage.mp4';
-    const videoBlob = await downloadVideoFromStorage(storagePathFromRequest);
+    // storagePathFromRequest は "uploads/file.mp4" のようなバケット以下のパス
+    const videoStream = await downloadVideoFromStorage(storagePathFromRequest);
 
-    const transcript = await transcribeVideoWithWhisper(videoBlob, originalFileName);
+    const transcript = await transcribeVideoWithWhisper(videoStream, fileNameForWhisper, mimeTypeForWhisper);
     await updateTaskInSupabase(currentTaskId, 'transcribed_in_vercel', { transcription_result: transcript });
 
     const structuredSummary = await summarizeTextWithGemini(transcript);
