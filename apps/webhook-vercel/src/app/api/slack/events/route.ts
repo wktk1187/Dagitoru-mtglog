@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Buffer } from 'node:buffer';
 import { v4 as uuidv4 } from 'uuid';
+import { WebClient } from "@slack/web-api";
 
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
@@ -109,31 +110,53 @@ export async function POST(request: NextRequest) {
   // file_sharedイベントの処理
   if (data.event && data.event.type === 'file_shared') {
     const fileId = data.event.file_id;
-    const eventData = data.event; // eventオブジェクトを格納
-    console.log(`Received file_shared event for file_id: ${fileId}`);
+    const eventChannelId = data.event.channel_id;
+    console.log(`Received file_shared event for file_id: ${fileId} in channel: ${eventChannelId}`);
 
     try {
-      // Slackイベントからファイル情報を取得
-      const fileInfo = eventData.file;
-      if (!fileInfo || !fileInfo.url_private_download) {
-        console.error('File info or url_private_download not found in event payload.', fileInfo);
-        return NextResponse.json({ error: 'File info not found' }, { status: 400 });
+      // Slack Web APIクライアントを初期化
+      const slackToken = process.env.SLACK_BOT_TOKEN;
+      if (!slackToken) {
+        console.error("SLACK_BOT_TOKEN is not set.");
+        return NextResponse.json(
+          { error: "Slack Bot Token not configured" },
+          { status: 500 }
+        );
+      }
+      const slackClient = new WebClient(slackToken);
+
+      // files.info APIを呼び出してファイル詳細情報を取得
+      const fileInfoResponse = await slackClient.files.info({ file: fileId });
+
+      if (!fileInfoResponse.ok || !fileInfoResponse.file) {
+        console.error("Failed to retrieve file info from Slack API:", fileInfoResponse.error);
+        return NextResponse.json(
+          { error: "Failed to retrieve file info" },
+          { status: 500 }
+        );
       }
 
-      // Slackメッセージテキストの取得
-      // file.initial_comment が存在し、その中に comment がある場合、それを使用
-      // 存在しない場合は空文字とし、parseSlackMessageTextが適切に処理するようにする
-      const messageText = fileInfo.initial_comment && fileInfo.initial_comment.comment
-        ? fileInfo.initial_comment.comment
-        : ""; //
-      const parsedTextData = parseSlackMessageText(messageText);
+      const fileData = fileInfoResponse.file; // 完全なファイルオブジェクト
+      console.log("Successfully retrieved file info:", JSON.stringify(fileData, null, 2));
 
-      const downloadUrl = fileInfo.url_private_download;
-      const originalFileName = fileInfo.name || 'unknown_file';
-      const fileType = fileInfo.mimetype || 'application/octet-stream';
-      // 拡張子は fileInfo.filetype から取得し、なければMIMEタイプから推測するかデフォルト値を設定
+      if (!fileData.url_private_download) { // ダウンロードURLをチェック
+        console.error('url_private_download not found in file info.', fileData);
+        return NextResponse.json({ error: 'File download URL not found' }, { status: 400 });
+      }
+      
+      // Slackメッセージテキストの取得 (initial_comment が fileData に含まれることを期待)
+      const messageText = fileData.initial_comment && fileData.initial_comment.comment
+        ? fileData.initial_comment.comment
+        : ""; // コメントがない場合は空文字
+
+      const parsedMessage = parseSlackMessageText(messageText);
+
+      const downloadUrl = fileData.url_private_download;
+      const originalFileName = fileData.name || 'unknown_file';
+      const fileType = fileData.mimetype || 'application/octet-stream';
+      // 拡張子は fileData.filetype から取得し、なければMIMEタイプから推測するかデフォルト値を設定
       // 一般的な動画・音声形式を考慮
-      let fileExtension = fileInfo.filetype || 'dat';
+      let fileExtension = fileData.filetype || 'dat';
       if (fileType.startsWith('video/')) {
         fileExtension = fileType.split('/')[1];
       } else if (fileType.startsWith('audio/')) {
@@ -141,14 +164,12 @@ export async function POST(request: NextRequest) {
       }
       if (fileExtension === 'quicktime') fileExtension = 'mov';
 
-
       const taskId = uuidv4(); // タスクIDを先に生成
       const storagePath = `uploads/${taskId}.${fileExtension}`; // storagePath に taskId を含める
 
       console.log(`Attempting to download from: ${downloadUrl}`);
       console.log(`File info: name=${originalFileName}, type=${fileType}, ext=${fileExtension}, storagePath=${storagePath}`);
-      console.log(`Parsed text: Meeting Date: ${parsedTextData.meetingDate}, Consultant: ${parsedTextData.consultantName}, Client: ${parsedTextData.clientName}`);
-
+      console.log(`Parsed text: Meeting Date: ${parsedMessage.meetingDate}, Consultant: ${parsedMessage.consultantName}, Client: ${parsedMessage.clientName}`);
 
       if (!SLACK_BOT_TOKEN) {
         console.error('SLACK_BOT_TOKEN is not set.');
@@ -195,9 +216,9 @@ export async function POST(request: NextRequest) {
         storage_path: storagePath, // storagePathは バケット名を含まないパス
         original_file_name: originalFileName,
         status: 'pending', // 初期ステータス
-        meeting_date: parsedTextData.meetingDate, // parseDateToISO済みの形式
-        consultant_name: parsedTextData.consultantName,
-        client_name: parsedTextData.clientName,
+        meeting_date: parsedMessage.meetingDate, // parseDateToISO済みの形式
+        consultant_name: parsedMessage.consultantName,
+        client_name: parsedMessage.clientName,
         // created_at, updated_at はDBのデフォルトまたはトリガーで設定される想定
       };
 
