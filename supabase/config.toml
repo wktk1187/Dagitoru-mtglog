@@ -1,0 +1,4 @@
+[functions.process-video-task]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/process-video-task/index.ts"

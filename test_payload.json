@@ -1,0 +1,11 @@
+{
+  "type": "INSERT",
+  "table": "transcription_tasks",
+  "schema": "public",
+  "record": {
+    "id": "754206fd-c9e7-4248-8479-53308fa4fd80",
+    "storage_path": "videos/681d7dd9ed914400136fb3f8.mp4",
+    "original_file_name": "681d7dd9ed914400136fb3f8.mp4",
+    "status": "pending"
+  }
+} 
