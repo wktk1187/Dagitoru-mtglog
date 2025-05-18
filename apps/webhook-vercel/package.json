@@ -1,7 +1,12 @@
 {
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@notionhq/client": "^3.0.1",
+    "@slack/web-api": "^7.9.1",
     "@supabase/supabase-js": "^2.49.4",
+    "formdata-node": "^6.0.3",
     "next": "^15.3.2",
+    "openai": "^4.100.0",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
