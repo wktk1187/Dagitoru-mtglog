@@ -94,9 +94,7 @@ serve(async (req: Request) => {
         { status: 500, headers: { "Content-Type": "application/json" } }
       );
     }
-    console.log(`[${taskId}] File downloaded from Slack. Converting to buffer...`);
-    const fileBuffer = await slackFileResponse.arrayBuffer();
-    console.log(`[${taskId}] File size: ${fileBuffer.byteLength} bytes. Determining extension...`);
+    console.log(`[${taskId}] File downloaded from Slack. Preparing to stream to Supabase Storage...`);
 
     let fileExtension = filetype || "dat";
     // MIMEタイプからの拡張子推測ロジック (Vercel APIからコピー＆改善も検討)
@@ -109,14 +107,15 @@ serve(async (req: Request) => {
     // 不明な拡張子の場合のフォールバックや、より堅牢なマッピングが必要な場合も
 
     const storagePath = `uploads/${taskId}.${fileExtension}`;
-    console.log(`[${taskId}] Uploading to Supabase Storage: ${storagePath} with type ${mimetype}`);
+    console.log(`[${taskId}] Uploading to Supabase Storage: ${storagePath} with type ${mimetype} using stream`);
 
     const { data: uploadResult, error: uploadError } =
       await supabaseAdmin.storage
         .from("videos")
-        .upload(storagePath, fileBuffer, {
+        .upload(storagePath, slackFileResponse.body, {
           contentType: mimetype,
           upsert: false, // true にして再試行を許容するか検討
+          duplex: "half", // DenoのReadableStreamを扱うために追加
         });
 
     if (uploadError) {
